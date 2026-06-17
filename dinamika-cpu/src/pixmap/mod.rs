@@ -3,7 +3,7 @@
 
 use crate::color::{Color, PremultipliedColor, PremultipliedColorU8};
 use crate::geometry::{Point, Transform};
-use crate::paint::{blend, Paint, Shader};
+use crate::paint::{blend, BlendMode, Paint, Shader};
 use crate::path::stroke::{build_stroke, Stroke};
 use crate::path::{FillRule, Path};
 use crate::raster::mask::Mask;
@@ -138,6 +138,66 @@ impl Pixmap {
 
         // Stamps are combined according to the non-zero bypass rule.
         self.fill_polys(&refs, paint, FillRule::NonZero, clip);
+    }
+
+    /// Overlays the image `src` on top of this one, placing its upper-left
+    /// corner at `(x, y)` (negative coordinates allowed), with an overall
+    /// transparency multiplier of `opacity` (`0..=1`) and blend mode of `blend_mode`.
+    ///
+    /// Only the intersection with the canvas is processed. This is the basic primitive
+    /// of pixmap-on-pixmap compositing: offscreen layers, group subtree transparency
+    /// (where opacity is applied to the rendered result as a whole),
+    /// and sprite overlays with arbitrary blending modes.
+    pub fn draw_pixmap(&mut self, src: &Pixmap, x: i32, y: i32, opacity: f32, blend_mode: BlendMode) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+
+        // The destination area is the intersection of the shifted `src` with the canvas.
+        let dx0 = x.max(0);
+        let dy0 = y.max(0);
+        let dx1 = (x + src.width as i32).min(self.width as i32);
+        let dy1 = (y + src.height as i32).min(self.height as i32);
+        if dx1 <= dx0 || dy1 <= dy0 {
+            return;
+        }
+
+        let dst_w = self.width as usize;
+        let src_w = src.width as usize;
+        for dy in dy0..dy1 {
+            let sy = (dy - y) as usize;
+            let dst_row = dy as usize * dst_w * 4;
+            let src_row = sy * src_w * 4;
+            for dx in dx0..dx1 {
+                let si = src_row + (dx - x) as usize * 4;
+                let sa = src.data[si + 3];
+                if sa == 0 && blend_mode == BlendMode::SourceOver {
+                    continue; // transparent source with SourceOver doesn't change anything
+                }
+
+                // Source Premultiplied: A common transparency multiplier is applied to all
+                // four channels, preserving the premultiplication.
+                let s = PremultipliedColor {
+                    r: src.data[si] as f32 / 255.0 * opacity,
+                    g: src.data[si + 1] as f32 / 255.0 * opacity,
+                    b: src.data[si + 2] as f32 / 255.0 * opacity,
+                    a: sa as f32 / 255.0 * opacity,
+                };
+                let di = dst_row + dx as usize * 4;
+                let d = PremultipliedColor {
+                    r: self.data[di] as f32 / 255.0,
+                    g: self.data[di + 1] as f32 / 255.0,
+                    b: self.data[di + 2] as f32 / 255.0,
+                    a: self.data[di + 3] as f32 / 255.0,
+                };
+                let out = blend(blend_mode, s, d).to_color_u8();
+                self.data[di] = out.red();
+                self.data[di + 1] = out.green();
+                self.data[di + 2] = out.blue();
+                self.data[di + 3] = out.alpha();
+            }
+        }
     }
 
     /// Rasterizes a set of closed polygons and blends them with the image.
@@ -371,5 +431,38 @@ mod tests {
             }
         }
         assert!(painted, "hairline was not drawn");
+    }
+
+    #[test]
+    fn draw_pixmap_offset_places_source() {
+        let mut dst = Pixmap::new(20, 20).unwrap();
+        let mut src = Pixmap::new(5, 5).unwrap();
+        src.fill(Color::from_rgba8(0, 200, 0, 255));
+        dst.draw_pixmap(&src, 10, 10, 1.0, BlendMode::SourceOver);
+        // In the destination area (10..15) — green, outside it — empty.
+        assert_eq!(dst.pixel(12, 12).unwrap().alpha(), 255);
+        assert_eq!(dst.pixel(2, 2).unwrap().alpha(), 0);
+        assert_eq!(dst.pixel(16, 16).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn draw_pixmap_negative_offset_clips() {
+        let mut dst = Pixmap::new(10, 10).unwrap();
+        let mut src = Pixmap::new(8, 8).unwrap();
+        src.fill(Color::from_rgba8(255, 0, 0, 255));
+        // Offset past the top-left corner — only the bottom-right part is visible.
+        dst.draw_pixmap(&src, -4, -4, 1.0, BlendMode::SourceOver);
+        assert_eq!(dst.pixel(0, 0).unwrap().alpha(), 255); // src(4,4)
+        assert_eq!(dst.pixel(5, 5).unwrap().alpha(), 0); // outside src
+    }
+
+    #[test]
+    fn draw_pixmap_opacity_halves_alpha() {
+        let mut dst = Pixmap::new(4, 4).unwrap();
+        let mut src = Pixmap::new(4, 4).unwrap();
+        src.fill(Color::from_rgba8(255, 255, 255, 255));
+        dst.draw_pixmap(&src, 0, 0, 0.5, BlendMode::SourceOver);
+        let a = dst.pixel(2, 2).unwrap().alpha();
+        assert!((a as i32 - 128).abs() <= 2, "alpha={a}");
     }
 }
