@@ -1,0 +1,6 @@
+[package]
+name = "dinamika-cpu"
+description = "A raster 2D renderer: pixmap, path, paint and anti-aliased drawing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
