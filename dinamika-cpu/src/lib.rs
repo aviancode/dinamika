@@ -65,7 +65,7 @@ mod raster;
 pub use color::{Color, ColorU8, PremultipliedColor, PremultipliedColorU8};
 pub use geometry::{Point, Rect, Transform};
 pub use paint::{
-    BlendMode, GradientStop, LinearGradient, Paint,
+    BlendMode, ConicGradient, GradientStop, LinearGradient, Paint,
     RadialGradient, Shader, SpreadMode,
 };
 pub use path::stroke::{LineCap, LineJoin, Stroke};

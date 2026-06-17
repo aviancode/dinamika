@@ -1,4 +1,4 @@
-//! Gradient shaders: linear and radial, plus stop sampling.
+//! Gradient shaders: linear, radial and conic, plus stop sampling.
 //!
 //! Stop interpolation is linear over the sRGB (gamma-encoded) components (see
 //! the limitation in the `paint` module documentation): a light-correct
@@ -141,6 +141,75 @@ impl RadialGradient {
     }
 }
 
+/// A conic (sweep) gradient: the color changes by angle around the center.
+///
+/// The angle is measured from the `+X` direction clockwise (in a screen
+/// coordinate system with the Y axis pointing down), position `0` corresponds
+/// to `start_angle`, and `1` to a full turn. Outside `0..=1` the behavior is
+/// determined by `spread` (the default [`SpreadMode::Repeat`] gives a seamless
+/// ring).
+#[derive(Clone, Debug)]
+pub struct ConicGradient {
+    center: Point,
+    /// Start angle in radians.
+    start_angle: f32,
+    stops: Vec<GradientStop>,
+    spread: SpreadMode,
+    inv_transform: Transform,
+}
+
+impl ConicGradient {
+    /// Creates a conic gradient. `start_angle` is given in degrees. `None` if
+    /// there are fewer than two stops or the `transform` matrix is singular.
+    #[allow(clippy::new_ret_no_self)] // the constructor returns a Shader
+    pub fn new(
+        center: Point,
+        start_angle: f32,
+        stops: Vec<GradientStop>,
+        spread: SpreadMode,
+        transform: Transform,
+    ) -> Option<Shader> {
+        if stops.len() < 2 {
+            return None;
+        }
+        let inv_transform = transform.invert()?;
+        let mut stops = stops;
+        stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+        Some(Shader::Conic(ConicGradient {
+            center,
+            start_angle: start_angle.to_radians(),
+            stops,
+            spread,
+            inv_transform,
+        }))
+    }
+
+    /// Gradient parameter `a` (before spread) at an already-mapped point `p`.
+    #[inline]
+    fn param(&self, p: Point) -> f32 {
+        let d = p - self.center;
+        // atan2 gives an angle in (-π, π]; normalize to [0, 1) from start_angle.
+        let mut a = (d.y.atan2(d.x) - self.start_angle) / (2.0 * std::f32::consts::PI);
+        a -= a.floor();
+        a
+    }
+
+    pub(super) fn color_at(&self, p: Point) -> Color {
+        let p = self.inv_transform.map_point(p);
+        sample_stops(&self.stops, apply_spread(self.param(p), self.spread))
+    }
+
+    /// See [`super::Shader::shade_span`].
+    pub(super) fn shade_span(&self, x: usize, y: usize, len: usize, out: &mut Vec<Color>) {
+        let mut p = self.inv_transform.map_point(Point::new(x as f32 + 0.5, y as f32 + 0.5));
+        let step = column_step(&self.inv_transform);
+        for _ in 0..len {
+            out.push(sample_stops(&self.stops, apply_spread(self.param(p), self.spread)));
+            p = p + step;
+        }
+    }
+}
+
 /// The change in mapped (pre-image) position when stepping one pixel to the
 /// right. For an affine `inv_transform`, mapping is linear, so a unit step in
 /// the screen-space X adds the matrix's first column — letting a whole row be
@@ -198,6 +267,25 @@ fn sample_stops(stops: &[GradientStop], t: f32) -> Color {
 mod tests {
     use super::*;
 
+    #[test]
+    fn conic_gradient_sweeps_by_angle() {
+        let shader = ConicGradient::new(
+            Point::new(0.0, 0.0),
+            0.0,
+            vec![
+                GradientStop::new(0.0, Color::from_rgba8(0, 0, 0, 255)),
+                GradientStop::new(1.0, Color::from_rgba8(255, 255, 255, 255)),
+            ],
+            SpreadMode::Repeat,
+            Transform::identity(),
+        )
+        .unwrap();
+        // Angle 0 (along +X) — the start of the gradient, ~black.
+        assert!(shader.color_at(10.0, 0.0).red() < 0.05);
+        // Halfway (angle π) — the middle, ~gray.
+        assert!((shader.color_at(-10.0, 0.0).red() - 0.5).abs() < 0.1);
+    }
+
     /// The batched [`Shader::shade_span`] must agree with per-pixel
     /// [`Shader::color_at`] — including under a non-trivial transform, since the
     /// span path replaces `map_point` with an incremental add.
@@ -223,6 +311,8 @@ mod tests {
             )
             .unwrap(),
             RadialGradient::new(Point::new(10.0, 8.0), 14.0, stops(), SpreadMode::Reflect, transform)
+                .unwrap(),
+            ConicGradient::new(Point::new(9.0, 7.0), 30.0, stops(), SpreadMode::Repeat, transform)
                 .unwrap(),
         ];
 

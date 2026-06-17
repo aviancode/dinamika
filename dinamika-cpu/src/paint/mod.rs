@@ -2,7 +2,7 @@
 //! ([`BlendMode`]).
 //!
 //! The submodules split the responsibilities:
-//! - [`gradient`] — linear/radial gradients and stop sampling;
+//! - [`gradient`] — linear/radial/conic gradients and stop sampling;
 //! - [`blend`] — blend modes and Porter–Duff / W3C compositing.
 //!
 //! # Known limitation: colors are computed in sRGB, not in linear space
@@ -22,7 +22,7 @@ mod blend;
 mod gradient;
 
 pub use blend::BlendMode;
-pub use gradient::{GradientStop, LinearGradient, RadialGradient, SpreadMode};
+pub use gradient::{ConicGradient, GradientStop, LinearGradient, RadialGradient, SpreadMode};
 
 pub(crate) use blend::blend;
 
@@ -33,6 +33,8 @@ pub enum Shader {
     SolidColor(Color),
     Linear(LinearGradient),
     Radial(RadialGradient),
+    /// A conic (sweep) gradient by angle.
+    Conic(ConicGradient),
 }
 
 impl Shader {
@@ -42,6 +44,7 @@ impl Shader {
             Shader::SolidColor(c) => *c,
             Shader::Linear(g) => g.color_at(Point::new(x, y)),
             Shader::Radial(g) => g.color_at(Point::new(x, y)),
+            Shader::Conic(g) => g.color_at(Point::new(x, y)),
         }
     }
 
@@ -60,6 +63,7 @@ impl Shader {
             Shader::SolidColor(c) => out.extend(std::iter::repeat_n(*c, len)),
             Shader::Linear(g) => g.shade_span(x, y, len, out),
             Shader::Radial(g) => g.shade_span(x, y, len, out),
+            Shader::Conic(g) => g.shade_span(x, y, len, out),
         }
     }
 }
