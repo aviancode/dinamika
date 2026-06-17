@@ -60,6 +60,7 @@
 mod color;
 mod geometry;
 mod path;
+mod raster;
 
 pub use color::{Color, ColorU8, PremultipliedColor, PremultipliedColorU8};
 pub use geometry::{Point, Rect, Transform};
