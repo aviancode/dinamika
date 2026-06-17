@@ -56,3 +56,7 @@
 //!   advance only — no kerning, shaping or bidi (see the `text` module).
 //!
 //! [`ttf-parser`]: https://docs.rs/ttf-parser
+
+mod geometry;
+
+pub use geometry::{Point, Rect, Transform};
