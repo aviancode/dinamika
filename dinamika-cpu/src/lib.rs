@@ -59,6 +59,8 @@
 
 mod color;
 mod geometry;
+mod path;
 
 pub use color::{Color, ColorU8, PremultipliedColor, PremultipliedColorU8};
 pub use geometry::{Point, Rect, Transform};
+pub use path::{FillRule, Path, PathBuilder, PathSegment};
