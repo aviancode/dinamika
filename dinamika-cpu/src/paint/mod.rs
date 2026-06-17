@@ -3,6 +3,7 @@
 //!
 //! The submodules split the responsibilities:
 //! - [`gradient`] — linear/radial/conic gradients and stop sampling;
+//! - [`pattern`] — a texture/[`Pattern`] shader from an image;
 //! - [`blend`] — blend modes and Porter–Duff / W3C compositing.
 //!
 //! # Known limitation: colors are computed in sRGB, not in linear space
@@ -20,9 +21,11 @@ use crate::geometry::Point;
 
 mod blend;
 mod gradient;
+mod pattern;
 
 pub use blend::BlendMode;
 pub use gradient::{ConicGradient, GradientStop, LinearGradient, RadialGradient, SpreadMode};
+pub use pattern::{FilterQuality, Pattern};
 
 pub(crate) use blend::blend;
 
@@ -35,6 +38,8 @@ pub enum Shader {
     Radial(RadialGradient),
     /// A conic (sweep) gradient by angle.
     Conic(ConicGradient),
+    /// A texture/pattern from an image.
+    Pattern(Pattern),
 }
 
 impl Shader {
@@ -45,6 +50,7 @@ impl Shader {
             Shader::Linear(g) => g.color_at(Point::new(x, y)),
             Shader::Radial(g) => g.color_at(Point::new(x, y)),
             Shader::Conic(g) => g.color_at(Point::new(x, y)),
+            Shader::Pattern(p) => p.color_at(Point::new(x, y)),
         }
     }
 
@@ -64,6 +70,7 @@ impl Shader {
             Shader::Linear(g) => g.shade_span(x, y, len, out),
             Shader::Radial(g) => g.shade_span(x, y, len, out),
             Shader::Conic(g) => g.shade_span(x, y, len, out),
+            Shader::Pattern(p) => p.shade_span(x, y, len, out),
         }
     }
 }
