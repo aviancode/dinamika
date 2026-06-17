@@ -9,6 +9,7 @@ use crate::path::{FillRule, Path};
 use crate::raster::mask::Mask;
 use crate::raster::Rasterizer;
 mod decode;
+mod encode;
 
 /// The accuracy of curve splitting in pixels
 /// (before taking into account the transformation scale).
