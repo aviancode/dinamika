@@ -4,10 +4,68 @@
 //! the limitation in the `paint` module documentation): a light-correct
 //! gradient would require converting to linear space.
 
+use core::fmt;
+use std::sync::Arc;
+
 use crate::color::Color;
 use crate::geometry::{Point, Transform};
 
 use super::Shader;
+
+/// Number of entries in a gradient's precomputed color lookup table.
+const LUT_SIZE: usize = 256;
+
+/// A gradient's color ramp baked into a fixed-size lookup table.
+///
+/// The stops are sampled once, at construction, into [`LUT_SIZE`] evenly spaced
+/// entries. At render time looking up a color is then an O(1) indexed read with
+/// a linear blend between the two neighbouring entries, instead of the previous
+/// O(stops) linear scan on every pixel (the hot path for large gradient fills).
+///
+/// The table is shared behind an [`Arc`] so cloning a gradient is cheap.
+#[derive(Clone)]
+struct ColorRamp {
+    lut: Arc<[Color; LUT_SIZE]>,
+}
+
+impl ColorRamp {
+    /// Bakes the table from already-sorted `stops` (each gradient constructor
+    /// sorts them before calling this).
+    fn new(stops: &[GradientStop]) -> ColorRamp {
+        let mut lut = [Color::TRANSPARENT; LUT_SIZE];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            let t = i as f32 / (LUT_SIZE - 1) as f32;
+            *slot = sample_stops(stops, t);
+        }
+        ColorRamp { lut: Arc::new(lut) }
+    }
+
+    /// Looks up the color at `t` (clamped to `0..=1`), linearly interpolating
+    /// between the two nearest table entries to avoid visible banding.
+    #[inline]
+    fn sample(&self, t: f32) -> Color {
+        let x = t.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32;
+        let i = x as usize; // floor; x >= 0
+        if i >= LUT_SIZE - 1 {
+            return self.lut[LUT_SIZE - 1];
+        }
+        let frac = x - i as f32;
+        let a = self.lut[i];
+        let b = self.lut[i + 1];
+        Color::from_rgba(
+            a.red() + (b.red() - a.red()) * frac,
+            a.green() + (b.green() - a.green()) * frac,
+            a.blue() + (b.blue() - a.blue()) * frac,
+            a.alpha() + (b.alpha() - a.alpha()) * frac,
+        )
+    }
+}
+
+impl fmt::Debug for ColorRamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ColorRamp({LUT_SIZE} entries)")
+    }
+}
 
 /// How coordinates outside `0..=1` are handled for a gradient.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -39,7 +97,7 @@ impl GradientStop {
 pub struct LinearGradient {
     start: Point,
     end: Point,
-    stops: Vec<GradientStop>,
+    ramp: ColorRamp,
     spread: SpreadMode,
     inv_transform: Transform,
 }
@@ -61,7 +119,8 @@ impl LinearGradient {
         let inv_transform = transform.invert()?;
         let mut stops = stops;
         stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
-        Some(Shader::Linear(LinearGradient { start, end, stops, spread, inv_transform }))
+        let ramp = ColorRamp::new(&stops);
+        Some(Shader::Linear(LinearGradient { start, end, ramp, spread, inv_transform }))
     }
 
     /// Gradient parameter `t` (before spread) at an already-mapped point `p`.
@@ -78,7 +137,7 @@ impl LinearGradient {
 
     pub(super) fn color_at(&self, p: Point) -> Color {
         let p = self.inv_transform.map_point(p);
-        sample_stops(&self.stops, apply_spread(self.param(p), self.spread))
+        self.ramp.sample(apply_spread(self.param(p), self.spread))
     }
 
     /// Shades a horizontal run of `len` pixels starting at pixel `(x, y)`,
@@ -89,7 +148,7 @@ impl LinearGradient {
         let mut p = self.inv_transform.map_point(Point::new(x as f32 + 0.5, y as f32 + 0.5));
         let step = column_step(&self.inv_transform);
         for _ in 0..len {
-            out.push(sample_stops(&self.stops, apply_spread(self.param(p), self.spread)));
+            out.push(self.ramp.sample(apply_spread(self.param(p), self.spread)));
             p = p + step;
         }
     }
@@ -100,7 +159,7 @@ impl LinearGradient {
 pub struct RadialGradient {
     center: Point,
     radius: f32,
-    stops: Vec<GradientStop>,
+    ramp: ColorRamp,
     spread: SpreadMode,
     inv_transform: Transform,
 }
@@ -120,13 +179,14 @@ impl RadialGradient {
         let inv_transform = transform.invert()?;
         let mut stops = stops;
         stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
-        Some(Shader::Radial(RadialGradient { center, radius, stops, spread, inv_transform }))
+        let ramp = ColorRamp::new(&stops);
+        Some(Shader::Radial(RadialGradient { center, radius, ramp, spread, inv_transform }))
     }
 
     pub(super) fn color_at(&self, p: Point) -> Color {
         let p = self.inv_transform.map_point(p);
         let t = (p - self.center).length() / self.radius;
-        sample_stops(&self.stops, apply_spread(t, self.spread))
+        self.ramp.sample(apply_spread(t, self.spread))
     }
 
     /// See [`super::Shader::shade_span`].
@@ -135,7 +195,7 @@ impl RadialGradient {
         let step = column_step(&self.inv_transform);
         for _ in 0..len {
             let t = (p - self.center).length() / self.radius;
-            out.push(sample_stops(&self.stops, apply_spread(t, self.spread)));
+            out.push(self.ramp.sample(apply_spread(t, self.spread)));
             p = p + step;
         }
     }
@@ -153,7 +213,7 @@ pub struct ConicGradient {
     center: Point,
     /// Start angle in radians.
     start_angle: f32,
-    stops: Vec<GradientStop>,
+    ramp: ColorRamp,
     spread: SpreadMode,
     inv_transform: Transform,
 }
@@ -175,10 +235,11 @@ impl ConicGradient {
         let inv_transform = transform.invert()?;
         let mut stops = stops;
         stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+        let ramp = ColorRamp::new(&stops);
         Some(Shader::Conic(ConicGradient {
             center,
             start_angle: start_angle.to_radians(),
-            stops,
+            ramp,
             spread,
             inv_transform,
         }))
@@ -196,7 +257,7 @@ impl ConicGradient {
 
     pub(super) fn color_at(&self, p: Point) -> Color {
         let p = self.inv_transform.map_point(p);
-        sample_stops(&self.stops, apply_spread(self.param(p), self.spread))
+        self.ramp.sample(apply_spread(self.param(p), self.spread))
     }
 
     /// See [`super::Shader::shade_span`].
@@ -204,7 +265,7 @@ impl ConicGradient {
         let mut p = self.inv_transform.map_point(Point::new(x as f32 + 0.5, y as f32 + 0.5));
         let step = column_step(&self.inv_transform);
         for _ in 0..len {
-            out.push(sample_stops(&self.stops, apply_spread(self.param(p), self.spread)));
+            out.push(self.ramp.sample(apply_spread(self.param(p), self.spread)));
             p = p + step;
         }
     }
@@ -235,10 +296,12 @@ pub(super) fn apply_spread(t: f32, spread: SpreadMode) -> f32 {
     }
 }
 
-/// Samples a sorted list of stops at position `t` (`0..=1`). Interpolation is
-/// linear over the sRGB components (see the limitation in the module
-/// documentation): a light-correct gradient would require converting to linear
-/// space.
+/// Samples a sorted list of stops at position `t` (`0..=1`).
+///
+/// Used once per gradient to bake the [`ColorRamp`] lookup table; the per-pixel
+/// path goes through [`ColorRamp::sample`] instead. Interpolation is linear over
+/// the sRGB components (see the limitation in the module documentation): a
+/// light-correct gradient would require converting to linear space.
 fn sample_stops(stops: &[GradientStop], t: f32) -> Color {
     if t <= stops[0].position {
         return stops[0].color;
