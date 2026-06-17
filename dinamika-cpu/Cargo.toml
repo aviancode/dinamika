@@ -7,3 +7,7 @@ license.workspace = true
 
 [dependencies]
 png = "0.17"
+
+# Zero-allocation TrueType/OpenType parser used to extract glyph outlines and
+# metrics for text rendering (see the `text` module).
+ttf-parser = "0.25"

@@ -63,6 +63,7 @@ mod paint;
 mod path;
 mod pixmap;
 mod raster;
+mod text;
 
 pub use color::{Color, ColorU8, PremultipliedColor, PremultipliedColorU8};
 pub use geometry::{Point, Rect, Transform};
@@ -74,3 +75,4 @@ pub use path::stroke::{LineCap, LineJoin, Stroke};
 pub use path::{FillRule, Path, PathBuilder, PathSegment};
 pub use pixmap::Pixmap;
 pub use raster::mask::Mask;
+pub use text::{Font, FontError};
