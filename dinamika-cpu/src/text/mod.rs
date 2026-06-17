@@ -46,10 +46,13 @@
 mod outline;
 
 use crate::geometry::Transform;
-use crate::path::{Path, PathBuilder};
+use crate::path::{Path, PathBuilder, PathSegment};
 use outline::OutlineSink;
 
 use core::fmt;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The `.notdef` glyph, present in every valid font and used as the fallback
 /// for characters the font has no glyph for.
@@ -84,8 +87,25 @@ impl From<ttf_parser::FaceParsingError> for FontError {
 /// [`ttf_parser::Face`] — keep the bytes alive for at least as long as the
 /// `Font`. Parsing is cheap and allocation-free; metrics and outlines are read
 /// on demand.
+///
+/// # Glyph outline cache
+///
+/// Extracting a glyph's outline from the font (the `ttf-parser` outline walk) is
+/// the dominant cost when the same text is redrawn — for example, once per
+/// frame. [`Font`] therefore memoizes each glyph's outline, keyed by its
+/// [`GlyphId`](ttf_parser::GlyphId): the cached outline is stored once in
+/// font-design units and only scaled/positioned per draw. The cache uses
+/// interior mutability ([`RefCell`]), so a `Font` is single-threaded (not
+/// `Sync`) — share the loaded font bytes and create one `Font` per thread if you
+/// need concurrency.
 pub struct Font<'a> {
     face: ttf_parser::Face<'a>,
+    /// Memoized glyph outlines (the contour segments) in unscaled font-design
+    /// space, Y already flipped to pixmap orientation with the baseline origin at
+    /// `(0, 0)`. `None` marks a glyph with no contours (e.g. a space) so the
+    /// negative result is cached too. Storing the bare segments (not a [`Path`])
+    /// keeps the cache — and `Font` — `Send`.
+    glyph_cache: RefCell<HashMap<ttf_parser::GlyphId, Option<Arc<[PathSegment]>>>>,
 }
 
 impl<'a> Font<'a> {
@@ -98,23 +118,30 @@ impl<'a> Font<'a> {
     /// a plain single-face file.
     pub fn from_collection(data: &'a [u8], index: u32) -> Result<Self, FontError> {
         let face = ttf_parser::Face::parse(data, index)?;
-        Ok(Font { face })
+        Ok(Font { face, glyph_cache: RefCell::new(HashMap::new()) })
     }
 
-    /// Returns the glyph's outline in unscaled font-design space. `None` for a
-    /// glyph with no contours.
+    /// Returns the glyph's outline in unscaled font-design space, building it
+    /// (and caching it) on first request. `None` for a glyph with no contours.
     ///
-    /// The outline is built with the Y axis already flipped into pixmap
+    /// The outline is stored with the Y axis already flipped into pixmap
     /// orientation and the baseline origin at `(0, 0)`, so a placement only needs
     /// a uniform scale plus a translation — see [`Font::text_path`].
-    fn glyph_outline(&self, gid: ttf_parser::GlyphId) -> Option<Path> {
+    fn glyph_outline(&self, gid: ttf_parser::GlyphId) -> Option<Arc<[PathSegment]>> {
+        if let Some(cached) = self.glyph_cache.borrow().get(&gid) {
+            return cached.clone();
+        }
         // `scale = 1`, origin `(0, 0)`: the sink emits `(x, -y)`, i.e. font units
         // with the Y axis flipped but not yet scaled. Empty glyphs leave the
         // builder empty and `finish` returns `None`.
         let mut builder = PathBuilder::new();
         let mut sink = OutlineSink::new(&mut builder, 1.0, 0.0, 0.0);
-        self.face.outline_glyph(gid, &mut sink)?;
-        builder.finish()
+        let outline = match self.face.outline_glyph(gid, &mut sink) {
+            Some(_) => builder.finish().map(|p| Arc::from(p.segments())),
+            None => None,
+        };
+        self.glyph_cache.borrow_mut().insert(gid, outline.clone());
+        outline
     }
 
     /// The size of the design grid in font units — the denominator for scaling
@@ -186,7 +213,7 @@ impl<'a> Font<'a> {
         let gid = self.face.glyph_index(ch)?;
         let outline = self.glyph_outline(gid)?;
         let mut builder = PathBuilder::new();
-        builder.push_path_transformed(outline.segments(), &placement(self.scale(size), x, y));
+        builder.push_path_transformed(&outline, &placement(self.scale(size), x, y));
         builder.finish()
     }
 
@@ -217,10 +244,11 @@ impl<'a> Font<'a> {
                 continue;
             }
             let gid = self.face.glyph_index(ch).unwrap_or(NOTDEF);
-            // Empty glyphs (e.g. spaces) have no outline; only their advance
-            // matters. Drawable glyphs are re-emitted under this placement.
+            // Empty glyphs (e.g. spaces) have no cached outline; only their
+            // advance matters. Drawable glyphs re-emit their cached outline under
+            // this placement instead of being re-extracted from the font.
             if let Some(outline) = self.glyph_outline(gid) {
-                builder.push_path_transformed(outline.segments(), &placement(scale, pen_x, baseline));
+                builder.push_path_transformed(&outline, &placement(scale, pen_x, baseline));
             }
             let advance = self.face.glyph_hor_advance(gid).unwrap_or(0);
             pen_x += advance as f32 * scale;
@@ -230,8 +258,8 @@ impl<'a> Font<'a> {
     }
 }
 
-/// The transform that places a glyph outline (unscaled font-design space, Y
-/// already flipped, baseline origin at `(0, 0)`) at pixel `(origin_x,
+/// The transform that places a cached glyph outline (unscaled font-design space,
+/// Y already flipped, baseline origin at `(0, 0)`) at pixel `(origin_x,
 /// baseline_y)` scaled by `scale` pixels per font unit: a uniform scale and a
 /// translation, no further Y flip (the outline is already flipped).
 #[inline]
@@ -242,6 +270,14 @@ fn placement(scale: f32, origin_x: f32, baseline_y: f32) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The glyph-outline cache must not cost `Font` its `Send` (so a loaded font
+    /// can still move between threads); it is intentionally not `Sync`.
+    #[test]
+    fn font_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Font<'static>>();
+    }
 
     #[test]
     fn invalid_data_fails_to_parse() {
