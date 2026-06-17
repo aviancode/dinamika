@@ -59,7 +59,9 @@
 
 mod color;
 mod geometry;
+mod paint;
 mod path;
+mod pixmap;
 mod raster;
 
 pub use color::{Color, ColorU8, PremultipliedColor, PremultipliedColorU8};
@@ -70,4 +72,5 @@ pub use paint::{
 };
 pub use path::stroke::{LineCap, LineJoin, Stroke};
 pub use path::{FillRule, Path, PathBuilder, PathSegment};
+pub use pixmap::Pixmap;
 pub use raster::mask::Mask;
