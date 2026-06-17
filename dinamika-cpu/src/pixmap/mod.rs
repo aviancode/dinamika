@@ -8,6 +8,7 @@ use crate::path::stroke::{build_stroke, Stroke};
 use crate::path::{FillRule, Path};
 use crate::raster::mask::Mask;
 use crate::raster::Rasterizer;
+mod decode;
 
 /// The accuracy of curve splitting in pixels
 /// (before taking into account the transformation scale).

@@ -4,3 +4,6 @@ description = "A raster 2D renderer: pixmap, path, paint and anti-aliased drawin
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+png = "0.17"
