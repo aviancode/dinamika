@@ -1,10 +1,9 @@
-//! Brushes: [`Paint`], shaders ([`Shader`]) and blend modes ([`BlendMode`]).
+//! Brushes: [`Paint`], shaders ([`Shader`]) with gradients and blend modes
+//! ([`BlendMode`]).
 //!
 //! The submodules split the responsibilities:
+//! - [`gradient`] — linear/radial gradients and stop sampling;
 //! - [`blend`] — blend modes and Porter–Duff / W3C compositing.
-//!
-//! For now a shader is just a solid color; gradients and patterns arrive in
-//! later commits.
 //!
 //! # Known limitation: colors are computed in sRGB, not in linear space
 //!
@@ -20,8 +19,10 @@ use crate::color::Color;
 use crate::geometry::Point;
 
 mod blend;
+mod gradient;
 
 pub use blend::BlendMode;
+pub use gradient::{GradientStop, LinearGradient, RadialGradient, SpreadMode};
 
 pub(crate) use blend::blend;
 
@@ -30,14 +31,17 @@ pub(crate) use blend::blend;
 pub enum Shader {
     /// Solid color.
     SolidColor(Color),
+    Linear(LinearGradient),
+    Radial(RadialGradient),
 }
 
 impl Shader {
     /// The source color at point `(x, y)` (the pixel center).
     pub fn color_at(&self, x: f32, y: f32) -> Color {
-        let _ = (x, y);
         match self {
             Shader::SolidColor(c) => *c,
+            Shader::Linear(g) => g.color_at(Point::new(x, y)),
+            Shader::Radial(g) => g.color_at(Point::new(x, y)),
         }
     }
 
@@ -45,13 +49,17 @@ impl Shader {
     /// `(x + 0.5, y + 0.5)`, `(x + 1.5, y + 0.5)`, … — appending one [`Color`]
     /// per pixel to `out`.
     ///
-    /// This is the batched counterpart of [`Shader::color_at`]. `out` is
-    /// appended to (not cleared), so reuse a buffer across rows and clear it
+    /// This is the batched counterpart of [`Shader::color_at`]. Because every
+    /// shader's coordinate mapping is affine, the run is evaluated by mapping
+    /// the first pixel once and then advancing by a constant per-pixel delta,
+    /// instead of recomputing `inv_transform.map_point` for every pixel. `out`
+    /// is appended to (not cleared), so reuse a buffer across rows and clear it
     /// yourself between runs.
     pub(crate) fn shade_span(&self, x: usize, y: usize, len: usize, out: &mut Vec<Color>) {
-        let _ = (x, y);
         match self {
             Shader::SolidColor(c) => out.extend(std::iter::repeat_n(*c, len)),
+            Shader::Linear(g) => g.shade_span(x, y, len, out),
+            Shader::Radial(g) => g.shade_span(x, y, len, out),
         }
     }
 }
