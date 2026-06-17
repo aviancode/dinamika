@@ -1,6 +1,10 @@
 //! Vector contours: segments, [`Path`] and the convenient builder [`PathBuilder`].
 //!
-//! Bézier curves are flattened into polylines during rasterization; see [`Path::flatten`].
+//! Bézier curves are flattened into polylines during rasterization; see [`Path::to_contours`].
+
+use core::fmt;
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use crate::geometry::{Point, Rect, Transform};
 
@@ -29,10 +33,52 @@ pub enum PathSegment {
 }
 
 /// An immutable set of contours.
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// Flattening the curves into polylines ([`Path::to_contours`]) is memoized: a
+/// path filled repeatedly with the same transform and tolerance — the common
+/// case for a shape redrawn every frame — reuses the cached polylines instead of
+/// re-flattening and re-allocating them. The cache uses interior mutability, so
+/// a `Path` is `Send` but not `Sync` (single-threaded use, as elsewhere in the
+/// crate); equality and `Debug` ignore it.
+#[derive(Default)]
 pub struct Path {
     pub(crate) segments: Vec<PathSegment>,
     bounds: Option<Rect>,
+    /// Memoized flattening for the last `(transform, tolerance)` it was asked
+    /// for. `None` until the first [`Path::to_contours`].
+    flatten_cache: RefCell<Option<FlattenCache>>,
+}
+
+/// The flattened polylines cached for one `(transform, tolerance)` pair.
+struct FlattenCache {
+    transform: Transform,
+    tolerance: f32,
+    contours: Arc<Vec<Contour>>,
+}
+
+impl Clone for Path {
+    fn clone(&self) -> Self {
+        // A clone starts with an empty cache: cheap, and avoids sharing mutable
+        // cache state. The flattening is rebuilt on first use if needed.
+        Path { segments: self.segments.clone(), bounds: self.bounds, flatten_cache: RefCell::new(None) }
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        // The flatten cache is a derived value — two paths are equal when their
+        // segments (and bounds) are.
+        self.segments == other.segments && self.bounds == other.bounds
+    }
+}
+
+impl fmt::Debug for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Path")
+            .field("segments", &self.segments)
+            .field("bounds", &self.bounds)
+            .finish()
+    }
 }
 
 /// A single contour after flattening the curves — a polyline.
@@ -62,8 +108,26 @@ impl Path {
     ///
     /// `transform` is applied to the anchor points before flattening, so
     /// `tolerance` is specified in pixels of the final image.
-    pub(crate) fn flatten(&self, transform: Transform, tolerance: f32) -> Vec<Contour> {
+    ///
+    /// The result is memoized: calling again with the same `transform` and
+    /// `tolerance` returns the cached polylines (a cheap [`Arc`] clone) instead
+    /// of re-flattening.
+    pub(crate) fn to_contours(&self, transform: Transform, tolerance: f32) -> Arc<Vec<Contour>> {
         let tol = tolerance.max(1e-3);
+        if let Some(cache) = self.flatten_cache.borrow().as_ref() {
+            if cache.transform == transform && cache.tolerance == tol {
+                return cache.contours.clone();
+            }
+        }
+        let contours = Arc::new(self.flatten(transform, tol));
+        *self.flatten_cache.borrow_mut() =
+            Some(FlattenCache { transform, tolerance: tol, contours: contours.clone() });
+        contours
+    }
+
+    /// Flattens the curves into polylines (the uncached worker behind
+    /// [`Path::to_contours`]). `tol` is already clamped to a sane minimum.
+    fn flatten(&self, transform: Transform, tol: f32) -> Vec<Contour> {
         let mut contours: Vec<Contour> = Vec::new();
         let mut current: Vec<Point> = Vec::new();
         let mut start = Point::ZERO;
@@ -332,7 +396,7 @@ impl PathBuilder {
             (Some(min), Some(max)) => Rect::from_ltrb(min.x, min.y, max.x, max.y),
             _ => None,
         };
-        Some(Path { segments: self.segments, bounds })
+        Some(Path { segments: self.segments, bounds, flatten_cache: RefCell::new(None) })
     }
 
     /// Appends path `segments`, each mapped by `transform`.
@@ -404,7 +468,7 @@ mod tests {
     #[test]
     fn builds_rect_contour() {
         let path = PathBuilder::from_rect(Rect::from_xywh(1.0, 2.0, 10.0, 4.0).unwrap());
-        let contours = path.flatten(Transform::identity(), 0.1);
+        let contours = path.to_contours(Transform::identity(), 0.1);
         assert_eq!(contours.len(), 1);
         assert!(contours[0].closed);
         // 4 corners (closing does not add an extra point)
@@ -424,9 +488,35 @@ mod tests {
         // A radius larger than half the side must not break the contour.
         let rect = Rect::from_xywh(0.0, 0.0, 10.0, 10.0).unwrap();
         let path = PathBuilder::from_round_rect(rect, 100.0);
-        let contours = path.flatten(Transform::identity(), 0.1);
+        let contours = path.to_contours(Transform::identity(), 0.1);
         assert_eq!(contours.len(), 1);
         assert!(contours[0].closed);
+    }
+
+    /// The flattening cache must hand back identical polylines for a repeated
+    /// `(transform, tolerance)` and rebuild them when either changes.
+    #[test]
+    fn flatten_cache_reuses_and_invalidates() {
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0).cubic_to(0.0, 40.0, 40.0, 40.0, 40.0, 0.0);
+        let path = b.finish().unwrap();
+
+        let a = path.to_contours(Transform::identity(), 0.1);
+        let again = path.to_contours(Transform::identity(), 0.1);
+        // Same parameters: the very same allocation is returned (Arc reuse).
+        assert!(Arc::ptr_eq(&a, &again));
+
+        // A different transform invalidates the cache and reflattens.
+        let scaled = path.to_contours(Transform::from_scale(4.0, 4.0), 0.1);
+        assert!(!Arc::ptr_eq(&a, &scaled));
+        // Finer detail at a larger scale → more flattened points.
+        assert!(scaled[0].points.len() >= a[0].points.len());
+
+        // Cloning a path does not carry the cache (fresh, independent flatten).
+        let clone = path.clone();
+        let from_clone = clone.to_contours(Transform::identity(), 0.1);
+        assert!(!Arc::ptr_eq(&a, &from_clone));
+        assert_eq!(from_clone[0].points.len(), a[0].points.len());
     }
 
     #[test]
@@ -434,7 +524,7 @@ mod tests {
         let mut b = PathBuilder::new();
         b.move_to(0.0, 0.0).cubic_to(0.0, 100.0, 100.0, 100.0, 100.0, 0.0);
         let path = b.finish().unwrap();
-        let contours = path.flatten(Transform::identity(), 0.1);
+        let contours = path.to_contours(Transform::identity(), 0.1);
         assert!(contours[0].points.len() > 5);
     }
 }
