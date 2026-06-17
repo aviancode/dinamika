@@ -8,7 +8,7 @@
 use crate::geometry::Point;
 use crate::path::FillRule;
 
-
+pub(crate) mod mask;
 
 pub(crate) struct Rasterizer {
     /// Buffer offset relative to the pixmap (top-left corner of the bbox).
