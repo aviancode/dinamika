@@ -8,6 +8,8 @@ use crate::path::stroke::{build_stroke, Stroke};
 use crate::path::{FillRule, Path};
 use crate::raster::mask::Mask;
 use crate::raster::Rasterizer;
+use crate::text::Font;
+
 mod decode;
 mod encode;
 
@@ -140,6 +142,37 @@ impl Pixmap {
 
         // Stamps are combined according to the non-zero bypass rule.
         self.fill_polys(&refs, paint, FillRule::NonZero, clip);
+    }
+
+    /// Draws a string by filling its glyph outlines with a brush.
+    ///
+    /// A convenience wrapper over [`Font::text_path`] + [`Pixmap::fill_path`]:
+    /// the outline of `text` is built at em `size` (in pixels) with the first
+    /// baseline origin at `(x, y)`, then filled with `paint` using the non-zero
+    /// winding rule — the rule TrueType/OpenType outlines are authored for.
+    /// `transform` and `clip` behave exactly as in [`Pixmap::fill_path`]; for
+    /// example, pass [`Transform::from_rotate_at`] to draw rotated text or a
+    /// [`Mask`] to clip it. Whitespace-only or empty `text` draws nothing.
+    ///
+    /// See the [`text`](crate::Font) module for the (deliberately minimal)
+    /// layout rules — single line per `\n`, no kerning or shaping.
+    // Positional API in the spirit of `fill_path`/`stroke_path`; text just needs
+    // the extra string/size/origin inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_text(
+        &mut self,
+        font: &Font,
+        text: &str,
+        size: f32,
+        x: f32,
+        y: f32,
+        paint: &Paint,
+        transform: Transform,
+        clip: Option<&Mask>,
+    ) {
+        if let Some(path) = font.text_path(text, size, x, y) {
+            self.fill_path(&path, paint, FillRule::NonZero, transform, clip);
+        }
     }
 
     /// Overlays the image `src` on top of this one, placing its upper-left
@@ -466,5 +499,21 @@ mod tests {
         dst.draw_pixmap(&src, 0, 0, 0.5, BlendMode::SourceOver);
         let a = dst.pixel(2, 2).unwrap().alpha();
         assert!((a as i32 - 128).abs() <= 2, "alpha={a}");
+    }
+
+    #[test]
+    fn fill_clipped_by_rounded_parent() {
+        // The mask is a circle; the large rectangle fill is visible only inside the circle.
+        let clip_path = PathBuilder::from_circle(10.0, 10.0, 8.0).unwrap();
+        let mask =
+            Mask::from_path(20, 20, &clip_path, FillRule::NonZero, true, Transform::identity())
+                .unwrap();
+        let mut pm = Pixmap::new(20, 20).unwrap();
+        let rect = PathBuilder::from_rect(Rect::from_xywh(0.0, 0.0, 20.0, 20.0).unwrap());
+        let paint = Paint::from_color(Color::from_rgba8(255, 0, 0, 255));
+        pm.fill_path(&rect, &paint, FillRule::NonZero, Transform::identity(), Some(&mask));
+        // The center of the circle — painted, the corner outside the circle — empty.
+        assert_eq!(pm.pixel(10, 10).unwrap().alpha(), 255);
+        assert_eq!(pm.pixel(1, 1).unwrap().alpha(), 0);
     }
 }

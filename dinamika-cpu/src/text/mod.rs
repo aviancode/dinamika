@@ -1,18 +1,31 @@
-//! Text: loading TrueType/OpenType fonts with [`ttf-parser`] and turning glyph
-//! outlines into [`Path`]s.
+//! Text: loading TrueType/OpenType fonts with [`ttf-parser`], turning glyph
+//! outlines into [`Path`]s and a small horizontal layout for strings.
 //!
-//! A [`Font`] produces a [`Path`] (the filled glyph outline) via
-//! [`Font::glyph_path`], which is then rasterized by the usual
-//! [`Pixmap::fill_path`].
+//! The flow mirrors the rest of the crate: a [`Font`] produces a [`Path`] (the
+//! filled glyph outlines), which is then rasterized by the usual
+//! [`Pixmap::fill_path`]. For convenience [`Pixmap::fill_text`] wraps the two
+//! steps together.
 //!
 //! # Coordinate system
 //!
 //! Glyph outlines are authored on a Y-**up** design grid in *font units* (see
 //! [`Font::units_per_em`]) with the origin on the text baseline. Pixmap space is
-//! Y-**down**. [`Font::glyph_path`] bakes the conversion in (uniform scale
+//! Y-**down**. [`Font::text_path`] bakes the conversion in (uniform scale
 //! `size / units_per_em`, Y flip, baseline placement), so the returned path is
 //! already in pixels and ready to fill (see [`text::outline`](outline) for the
 //! exact mapping).
+//!
+//! # Known limitations
+//!
+//! Deliberately minimal layout for an MVP:
+//!
+//! - **No shaping or kerning.** Glyphs are placed one after another using only
+//!   their horizontal advance. Ligatures, contextual forms, the `kern`/`GPOS`
+//!   tables and combining marks are ignored.
+//! - **No bidirectional / complex scripts.** Characters are laid out strictly
+//!   left-to-right; the only layout control is the `\n` line break.
+//! - **One glyph per `char`.** Each Unicode scalar is mapped to a single glyph
+//!   via the font's `cmap`; missing characters fall back to `.notdef` (glyph 0).
 //!
 //! # Example
 //!
@@ -27,9 +40,7 @@
 //!
 //! let paint = Paint::from_color(Color::BLACK);
 //! // Baseline origin at (16, 80), em size 48px.
-//! if let Some(path) = font.glyph_path('A', 48.0, 16.0, 80.0) {
-//!     pixmap.fill_path(&path, &paint, FillRule::NonZero, Transform::identity(), None);
-//! }
+//! pixmap.fill_text(&font, "Hello", 48.0, 16.0, 80.0, &paint, Transform::identity(), None);
 //! ```
 
 mod outline;
@@ -95,7 +106,7 @@ impl<'a> Font<'a> {
     ///
     /// The outline is built with the Y axis already flipped into pixmap
     /// orientation and the baseline origin at `(0, 0)`, so a placement only needs
-    /// a uniform scale plus a translation — see [`Font::glyph_path`].
+    /// a uniform scale plus a translation — see [`Font::text_path`].
     fn glyph_outline(&self, gid: ttf_parser::GlyphId) -> Option<Path> {
         // `scale = 1`, origin `(0, 0)`: the sink emits `(x, -y)`, i.e. font units
         // with the Y axis flipped but not yet scaled. Empty glyphs leave the
@@ -135,7 +146,8 @@ impl<'a> Font<'a> {
     }
 
     /// Recommended distance between successive baselines, in pixels
-    /// (`ascender - descender + line_gap`).
+    /// (`ascender - descender + line_gap`). This is the step used for `\n` in
+    /// [`Font::text_path`].
     pub fn line_height(&self, size: f32) -> f32 {
         self.face.height() as f32 * self.scale(size)
     }
@@ -149,6 +161,22 @@ impl<'a> Font<'a> {
         advance as f32 * self.scale(size)
     }
 
+    /// Width of the widest line of `text`, in pixels (sum of advances per line,
+    /// no kerning). `\n` separates lines.
+    pub fn measure(&self, text: &str, size: f32) -> f32 {
+        let mut widest = 0.0f32;
+        let mut current = 0.0f32;
+        for ch in text.chars() {
+            if ch == '\n' {
+                widest = widest.max(current);
+                current = 0.0;
+            } else {
+                current += self.advance_width(ch, size);
+            }
+        }
+        widest.max(current)
+    }
+
     /// Builds the filled outline of a single character with its baseline origin
     /// at `(x, y)` in pixmap coordinates, scaled to em `size` (pixels).
     ///
@@ -159,6 +187,45 @@ impl<'a> Font<'a> {
         let outline = self.glyph_outline(gid)?;
         let mut builder = PathBuilder::new();
         builder.push_path_transformed(outline.segments(), &placement(self.scale(size), x, y));
+        builder.finish()
+    }
+
+    /// Lays a string out horizontally and returns one [`Path`] containing every
+    /// glyph's outline, ready to be filled with [`FillRule::NonZero`] — the rule
+    /// TrueType/OpenType outlines are authored for.
+    ///
+    /// `(x, y)` is the origin of the first baseline. Each `\n` resets the pen to
+    /// `x` and drops the baseline by one [`line_height`](Font::line_height).
+    /// Glyphs are advanced by their horizontal advance only (no kerning, see the
+    /// [module limitations](self#known-limitations)). Empty glyphs such as
+    /// spaces contribute no contours but still advance the pen.
+    ///
+    /// Returns `None` if the result is empty (e.g. whitespace-only text).
+    ///
+    /// [`FillRule::NonZero`]: crate::FillRule::NonZero
+    pub fn text_path(&self, text: &str, size: f32, x: f32, y: f32) -> Option<Path> {
+        let scale = self.scale(size);
+        let line_height = self.line_height(size);
+        let mut builder = PathBuilder::new();
+        let mut pen_x = x;
+        let mut baseline = y;
+
+        for ch in text.chars() {
+            if ch == '\n' {
+                pen_x = x;
+                baseline += line_height;
+                continue;
+            }
+            let gid = self.face.glyph_index(ch).unwrap_or(NOTDEF);
+            // Empty glyphs (e.g. spaces) have no outline; only their advance
+            // matters. Drawable glyphs are re-emitted under this placement.
+            if let Some(outline) = self.glyph_outline(gid) {
+                builder.push_path_transformed(outline.segments(), &placement(scale, pen_x, baseline));
+            }
+            let advance = self.face.glyph_hor_advance(gid).unwrap_or(0);
+            pen_x += advance as f32 * scale;
+        }
+
         builder.finish()
     }
 }
