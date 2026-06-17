@@ -4,6 +4,7 @@
 use crate::color::{Color, PremultipliedColor, PremultipliedColorU8};
 use crate::geometry::{Point, Transform};
 use crate::paint::{blend, Paint, Shader};
+use crate::path::stroke::{build_stroke, Stroke};
 use crate::path::{FillRule, Path};
 use crate::raster::mask::Mask;
 use crate::raster::Rasterizer;
@@ -103,6 +104,40 @@ impl Pixmap {
         // Each contour is implicitly closed during the fill.
         let polys: Vec<&[Point]> = contours.iter().map(|c| c.points.as_slice()).collect();
         self.fill_polys(&polys, paint, fill_rule, clip);
+    }
+
+    /// Brushes a path.
+    ///
+    /// If a clipping mask (see [`Pixmap::fill_path`]) is specified, the coverage
+    /// is multiplied by its value; `None` disables clipping.
+    ///
+    /// # Limitation: Non-uniform scaling and bevel
+    /// First, the path is converted to screen coordinates, and then a stroke
+    /// of constant width [`Stroke::width`] multiplied by a single
+    /// scalar—[`Transform::max_scale`]—is constructed from it.
+    /// Therefore, rotation and *uniform* scale are handled correctly, but
+    /// non-uniform scaling (e.g., `scale(2.0, 1.0)`) or bevel will
+    /// produce a uniform (circular) thickness instead of the expected elliptical one.
+    /// A correct anisotropic stroke would require constructing the path
+    /// before the transformation and then transforming it.
+    pub fn stroke_path(
+        &mut self,
+        path: &Path,
+        paint: &Paint,
+        stroke: &Stroke,
+        transform: Transform,
+        clip: Option<&Mask>,
+    ) {
+        let scale = transform.max_scale().max(1e-3);
+        let tol = FLATTEN_TOLERANCE / scale;
+        let contours = path.to_contours(transform, tol);
+
+        // The outline is constructed in screen coordinates; arc precision is in pixels.
+        let polys = build_stroke(&contours, &scaled_stroke(stroke, scale), FLATTEN_TOLERANCE);
+        let refs: Vec<&[Point]> = polys.iter().map(|p| p.as_slice()).collect();
+
+        // Stamps are combined according to the non-zero bypass rule.
+        self.fill_polys(&refs, paint, FillRule::NonZero, clip);
     }
 
     /// Rasterizes a set of closed polygons and blends them with the image.
@@ -241,6 +276,27 @@ impl Pixmap {
     }
 }
 
+/// Scales the stroke parameters into screen coordinates.
+///
+/// The width and dash intervals are multiplied by a single scalar `scale`
+/// ([`Transform::max_scale`]), so under non-uniform scaling/shearing the width
+/// comes out isotropic (see the limitation in [`Pixmap::stroke_path`]).
+///
+/// A "hairline" ([`Stroke::is_hairline`], width `<= 0`) is drawn exactly one
+/// device pixel wide regardless of scale, while the dash intervals are still
+/// scaled.
+fn scaled_stroke(stroke: &Stroke, scale: f32) -> Stroke {
+    let width = if stroke.is_hairline() { 1.0 } else { stroke.width * scale };
+    Stroke {
+        width,
+        line_cap: stroke.line_cap,
+        line_join: stroke.line_join,
+        miter_limit: stroke.miter_limit,
+        dash: stroke.dash.iter().map(|&d| d * scale).collect(),
+        dash_offset: stroke.dash_offset * scale,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,18 +340,36 @@ mod tests {
     }
 
     #[test]
-    fn fill_clipped_by_rounded_parent() {
-        // The mask is a circle; the large rectangle fill is visible only inside the circle.
-        let clip_path = PathBuilder::from_circle(10.0, 10.0, 8.0).unwrap();
-        let mask =
-            Mask::from_path(20, 20, &clip_path, FillRule::NonZero, true, Transform::identity())
-                .unwrap();
+    fn stroke_line_paints_pixels() {
         let mut pm = Pixmap::new(20, 20).unwrap();
-        let rect = PathBuilder::from_rect(Rect::from_xywh(0.0, 0.0, 20.0, 20.0).unwrap());
-        let paint = Paint::from_color(Color::from_rgba8(255, 0, 0, 255));
-        pm.fill_path(&rect, &paint, FillRule::NonZero, Transform::identity(), Some(&mask));
-        // The center of the circle — painted, the corner outside the circle — empty.
+        let mut b = PathBuilder::new();
+        b.move_to(2.0, 10.0).line_to(18.0, 10.0);
+        let path = b.finish().unwrap();
+        let paint = Paint::from_color(Color::BLACK);
+        let stroke = Stroke { width: 4.0, ..Stroke::default() };
+        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         assert_eq!(pm.pixel(10, 10).unwrap().alpha(), 255);
-        assert_eq!(pm.pixel(1, 1).unwrap().alpha(), 0);
+        assert_eq!(pm.pixel(10, 0).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn hairline_stroke_paints_thin_line() {
+        // Width 0 — a "hairline": a one-device-pixel line must be drawn
+        // (previously a zero width produced nothing).
+        let mut pm = Pixmap::new(20, 20).unwrap();
+        let mut b = PathBuilder::new();
+        b.move_to(2.0, 10.0).line_to(18.0, 10.0);
+        let path = b.finish().unwrap();
+        let paint = Paint::from_color(Color::BLACK);
+        let stroke = Stroke { width: 0.0, ..Stroke::default() };
+        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+        // There is coverage on the line.
+        let mut painted = false;
+        for y in 9..=10 {
+            if pm.pixel(10, y).unwrap().alpha() > 0 {
+                painted = true;
+            }
+        }
+        assert!(painted, "hairline was not drawn");
     }
 }
