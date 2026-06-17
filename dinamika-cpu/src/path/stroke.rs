@@ -104,10 +104,105 @@ pub(crate) fn build_stroke(contours: &[Contour], stroke: &Stroke, tolerance: f32
         return polys;
     }
 
+    // A dash splits the contours into separate "runs" — open polylines.
+    if !stroke.dash.is_empty() {
+        let dashed = apply_dash(contours, &stroke.dash, stroke.dash_offset);
+        for c in &dashed {
+            stroke_contour(c, r, stroke, tolerance, &mut polys);
+        }
+        return polys;
+    }
+
     for c in contours {
         stroke_contour(c, r, stroke, tolerance, &mut polys);
     }
     polys
+}
+
+/// Splits contours into "runs" by the dash pattern `intervals` (alternation
+/// "dash, gap, …"), starting from the phase offset `offset`.
+///
+/// The pattern is cyclic; an odd-length list is implicitly doubled. Closed
+/// contours are turned into a set of open runs. The intervals and offset are
+/// given in the same units as the contour points (screen pixels).
+fn apply_dash(contours: &[Contour], intervals: &[f32], offset: f32) -> Vec<Contour> {
+    // The pattern must have an even length: "dash, gap". An odd one is doubled.
+    let mut pattern: Vec<f32> = intervals.iter().map(|&v| v.max(0.0)).collect();
+    if pattern.len() % 2 == 1 {
+        let dup = pattern.clone();
+        pattern.extend(dup);
+    }
+    let total: f32 = pattern.iter().sum();
+    if total <= 0.0 {
+        return contours.to_vec();
+    }
+
+    let mut out: Vec<Contour> = Vec::new();
+    for contour in contours {
+        // A closed contour is traversed as a polyline with a return to the start.
+        let mut pts: Vec<Point> = contour.points.clone();
+        if contour.closed && pts.len() >= 2 {
+            pts.push(pts[0]);
+        }
+        if pts.len() < 2 {
+            continue;
+        }
+
+        // Initial phase: the interval index and the remainder until its end.
+        let mut phase = offset.rem_euclid(total);
+        let mut idx = 0usize;
+        while phase >= pattern[idx] {
+            phase -= pattern[idx];
+            idx = (idx + 1) % pattern.len();
+        }
+        let mut remaining = pattern[idx] - phase;
+        let mut on = idx.is_multiple_of(2);
+
+        let mut current: Vec<Point> = Vec::new();
+        if on {
+            current.push(pts[0]);
+        }
+
+        for w in pts.windows(2) {
+            let (mut a, b) = (w[0], w[1]);
+            let mut seg_len = a.distance(b);
+            if seg_len <= 1e-9 {
+                continue;
+            }
+            let dir = (b - a).normalize();
+            // Move along the segment, cutting at the dash interval boundaries.
+            while seg_len > remaining {
+                let cut = a + dir * remaining;
+                if on {
+                    current.push(cut);
+                    flush_dash(&mut current, &mut out);
+                } else {
+                    current.clear();
+                    current.push(cut);
+                }
+                a = cut;
+                seg_len -= remaining;
+                idx = (idx + 1) % pattern.len();
+                remaining = pattern[idx];
+                on = !on;
+            }
+            remaining -= seg_len;
+            if on {
+                current.push(b);
+            }
+        }
+        flush_dash(&mut current, &mut out);
+    }
+    out
+}
+
+/// Finishes the accumulated run as an open contour (if it has ≥2 points).
+fn flush_dash(current: &mut Vec<Point>, out: &mut Vec<Contour>) {
+    if current.len() >= 2 {
+        out.push(Contour { points: std::mem::take(current), closed: false });
+    } else {
+        current.clear();
+    }
 }
 
 fn stroke_contour(
@@ -328,6 +423,47 @@ mod tests {
         assert!(!polys.is_empty());
         // the first stamp is a rectangle of 4 points
         assert_eq!(polys[0].len(), 4);
+    }
+
+    #[test]
+    fn dash_splits_segment_into_runs() {
+        // A line of length 10 with the pattern [2,2] gives runs [0,2],[4,6],[8,10].
+        let contours = vec![Contour {
+            points: vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            closed: false,
+        }];
+        let dashed = apply_dash(&contours, &[2.0, 2.0], 0.0);
+        assert_eq!(dashed.len(), 3, "expected three runs");
+        assert!((dashed[0].points[0].x - 0.0).abs() < 1e-4);
+        assert!((dashed[0].points[1].x - 2.0).abs() < 1e-4);
+        assert!((dashed[2].points[0].x - 8.0).abs() < 1e-4);
+        assert!((dashed[2].points[1].x - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dash_offset_shifts_phase() {
+        // An offset of 1 within the pattern [2,2]: the line starts in the middle
+        // of a dash, so the first (shortened) run is [0,1], the next is [3,5].
+        let contours = vec![Contour {
+            points: vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            closed: false,
+        }];
+        let dashed = apply_dash(&contours, &[2.0, 2.0], 1.0);
+        assert!((dashed[0].points[0].x - 0.0).abs() < 1e-4, "first run from zero");
+        assert!((dashed[0].points[1].x - 1.0).abs() < 1e-4, "shortened to 1");
+        assert!((dashed[1].points[0].x - 3.0).abs() < 1e-4, "second run from 3");
+    }
+
+    #[test]
+    fn build_stroke_dashed_produces_multiple_runs() {
+        let contour = Contour {
+            points: vec![Point::new(0.0, 0.0), Point::new(20.0, 0.0)],
+            closed: false,
+        };
+        let s = Stroke { width: 2.0, dash: vec![4.0, 4.0], ..Stroke::default() };
+        let polys = build_stroke(&[contour], &s, 0.1);
+        // Several runs — noticeably more than a single rectangle.
+        assert!(polys.len() >= 3, "polys={}", polys.len());
     }
 
     #[test]
