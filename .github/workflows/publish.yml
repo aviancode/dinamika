@@ -1,0 +1,38 @@
+name: Publish crate from monorepo
+
+on:
+  push:
+    tags:
+      - main
+      - "*-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Определить крейт из тега
+        id: meta
+        run: |
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG##*-v}"
+            CRATE="${TAG%-v${VERSION}}"
+            echo "crate=$CRATE" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Проверить совпадение версии в Cargo.toml
+        run: |
+          TOML_VER=$(grep '^version' ${{ steps.meta.outputs.crate }}/Cargo.toml \
+            | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$TOML_VER" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "Версия в Cargo.toml ($TOML_VER) не совпадает с тегом!"
+            exit 1
+          fi
+
+      - name: Опубликовать
+        working-directory: crates/${{ steps.meta.outputs.crate }}
+        run: cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

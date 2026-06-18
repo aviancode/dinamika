@@ -1,0 +1,23 @@
+[package]
+name = "dinamika-cpu"
+description = "A raster 2D renderer: pixmap, path, paint and anti-aliased drawing."
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Timothy Myasnikov"]
+repository = "https://github.com/aviancode/dinamika"
+homepage = "https://github.com/aviancode/dinamika"
+documentation = "https://docs.rs/dinamika-cpu"
+readme = "README.md"
+keywords = ["2d", "graphics", "rasterizer", "rendering", "vector"]
+categories = ["graphics", "rendering::engine", "multimedia::images"]
+# Only the crate itself ships to crates.io — keep build artifacts and editor
+# files out of the package.
+exclude = ["/target", "/.gitignore"]
+
+[dependencies]
+png = "0.17"
+
+# Zero-allocation TrueType/OpenType parser used to extract glyph outlines and
+# metrics for text rendering (see the `text` module).
+ttf-parser = "0.25"
