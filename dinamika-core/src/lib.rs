@@ -19,4 +19,4 @@ pub use dinamika_cpu::{
 };
 
 pub use easing::Easing;
-pub use signal::{Signal, Tweenable};
+pub use signal::{Computed, Signal, Tweenable};

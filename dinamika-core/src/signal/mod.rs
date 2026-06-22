@@ -19,7 +19,8 @@
 //!
 //! The submodules split the responsibility:
 //! - [`tweenable`] — the [`Tweenable`] trait and its implementations for built-in
-//!   types.
+//!   types;
+//! - [`computed`] — the read-only derived signal [`Computed`].
 //!
 //! [Motion Canvas]: https://motioncanvas.io/
 
@@ -29,8 +30,10 @@ use std::rc::Rc;
 use crate::easing::Easing;
 use crate::timeline::{new_tween, Action};
 
+mod computed;
 mod tweenable;
 
+pub use computed::Computed;
 pub use tweenable::Tweenable;
 
 /// A reactive value, shared by reference.
