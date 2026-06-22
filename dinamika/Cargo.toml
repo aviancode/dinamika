@@ -3,6 +3,13 @@ name = "dinamika"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+authors = ["Timothy Myasnikov"]
+repository = "https://github.com/aviancode/dinamika"
+homepage = "https://github.com/aviancode/dinamika"
+documentation = "https://docs.rs/dinamika"
+readme = "README.md"
+keywords = ["animation", "graphics", "rendering", "declarative", "2d"]
+categories = ["graphics", "rendering", "multimedia"]
 
 [lib]
 path = "src/lib.rs"

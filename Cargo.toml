@@ -1,5 +1,5 @@
 [workspace]
-members = ["dinamika-core", "dinamika-cpu"]
+members = ["dinamika", "dinamika-core", "dinamika-cpu"]
 resolver = "2"
 
 [workspace.package]
