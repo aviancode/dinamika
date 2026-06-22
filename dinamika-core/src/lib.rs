@@ -7,6 +7,7 @@
 //! documentation commit.
 
 mod easing;
+mod output;
 mod render;
 mod shape;
 mod signal;
@@ -22,6 +23,7 @@ pub use dinamika_cpu::{
 };
 
 pub use easing::Easing;
+pub use output::scene_output_dir;
 pub use render::render_scene;
 pub use shape::{
     infinite, line, Align, Direction, HighlightEdit, IntoChildren, Justify, Language, Length,
