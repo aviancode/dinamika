@@ -10,3 +10,5 @@ path = "src/lib.rs"
 
 [dependencies]
 dinamika-cpu = { path = "../dinamika-cpu", version = "0.1.0" }
+
+syntect = { version = "5.3", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
