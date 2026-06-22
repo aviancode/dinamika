@@ -8,6 +8,7 @@
 
 mod easing;
 mod signal;
+mod timeline;
 
 /// Access to the underlying renderer.
 pub use dinamika_cpu as cpu;
@@ -20,3 +21,4 @@ pub use dinamika_cpu::{
 
 pub use easing::Easing;
 pub use signal::{Computed, Signal, Tweenable};
+pub use timeline::{cascade, delay, parallel, pause, sequence, Action, Timeline};
