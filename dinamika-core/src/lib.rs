@@ -6,6 +6,8 @@
 //! module; the full overview with an end-to-end example is installed in the
 //! documentation commit.
 
+mod easing;
+
 /// Access to the underlying renderer.
 pub use dinamika_cpu as cpu;
 
@@ -14,3 +16,5 @@ pub use dinamika_cpu::{
     BlendMode, Color, GradientStop, LinearGradient, Paint, Pixmap, Point, RadialGradient, Rect,
     Shader, SpreadMode, Transform,
 };
+
+pub use easing::Easing;
