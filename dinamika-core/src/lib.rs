@@ -22,7 +22,8 @@ pub use dinamika_cpu::{
 
 pub use easing::Easing;
 pub use shape::{
-    Align, Direction, IntoChildren, Justify, Length, Padding, PaddingTween, Shape, ShapeKind, Tween,
+    infinite, line, Align, Direction, HighlightEdit, IntoChildren, Justify, Length, Padding,
+    PaddingTween, Shape, ShapeKind, TextAlign, TextEdit, TextPos, Tween,
 };
 pub use signal::{Computed, Signal, Tweenable};
 pub use timeline::{cascade, delay, parallel, pause, sequence, Action, Timeline};
