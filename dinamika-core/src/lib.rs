@@ -7,6 +7,7 @@
 //! documentation commit.
 
 mod easing;
+mod shape;
 mod signal;
 mod timeline;
 
@@ -20,5 +21,8 @@ pub use dinamika_cpu::{
 };
 
 pub use easing::Easing;
+pub use shape::{
+    Align, Direction, IntoChildren, Justify, Length, Padding, PaddingTween, Shape, ShapeKind, Tween,
+};
 pub use signal::{Computed, Signal, Tweenable};
 pub use timeline::{cascade, delay, parallel, pause, sequence, Action, Timeline};
