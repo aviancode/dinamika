@@ -1,5 +1,6 @@
 [package]
 name = "dinamika"
+description = "Umbrella crate for the dinamika toolkit: re-exports the dinamika-cpu raster renderer and the dinamika-core declarative animation library."
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
