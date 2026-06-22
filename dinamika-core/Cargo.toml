@@ -1,0 +1,12 @@
+[package]
+name = "dinamika-core"
+description = "Declarative animation library: flex-based shapes, reactive signals, and a timeline (pause/parallel/sequence) on top of the dinamika-cpu raster renderer."
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dinamika-cpu = { path = "../dinamika-cpu", version = "0.1.0" }
