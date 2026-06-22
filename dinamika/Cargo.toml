@@ -1,0 +1,12 @@
+[package]
+name = "dinamika"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dinamika-cpu = { path = "../dinamika-cpu", version = "0.1.0" }
+dinamika-core = { path = "../dinamika-core", version = "0.1.0" }
